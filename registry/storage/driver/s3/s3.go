@@ -191,6 +191,7 @@ func FromParameters(parameters map[string]interface{}) (*Driver, error) {
 		rootDirectory = ""
 	}
 
+	fmt.Printf("region: %v", region)
 	params := DriverParameters{
 		fmt.Sprint(accessKey),
 		fmt.Sprint(secretKey),
@@ -202,6 +203,8 @@ func FromParameters(parameters map[string]interface{}) (*Driver, error) {
 		chunkSize,
 		fmt.Sprint(rootDirectory),
 	}
+	fmt.Printf("region: %v\n", region)
+	fmt.Printf("params: %v\n", params)
 
 	return New(params)
 }
