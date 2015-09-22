@@ -112,13 +112,23 @@ func FromParameters(parameters map[string]interface{}) (*Driver, error) {
 		secretKey = ""
 	}
 
+	endpoint, ok := parameters["endpoint"]
+	if !ok {
+		endpoint = ""
+	}
+
 	regionName, ok := parameters["region"]
 	if !ok || fmt.Sprint(regionName) == "" {
 		return nil, fmt.Errorf("No region parameter provided")
 	}
 	region := aws.GetRegion(fmt.Sprint(regionName))
 	if region.Name == "" {
-		return nil, fmt.Errorf("Invalid region provided: %v", region)
+		if endpoint != "" {
+			region.Name = fmt.Sprint(regionName)
+			region.S3Endpoint = fmt.Sprint(endpoint)
+		} else {
+			return nil, fmt.Errorf("Invalid region provided: %v", region)
+		}
 	}
 
 	bucket, ok := parameters["bucket"]
