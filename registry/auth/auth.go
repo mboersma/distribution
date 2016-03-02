@@ -21,7 +21,9 @@
 // 			if ctx, err := accessController.Authorized(ctx, access); err != nil {
 //				if challenge, ok := err.(auth.Challenge) {
 //					// Let the challenge write the response.
-//					challenge.ServeHTTP(w, r)
+//					challenge.SetHeaders(w)
+//					w.WriteHeader(http.StatusUnauthorized)
+//					return
 //				} else {
 //					// Some other error.
 //				}
@@ -35,6 +37,16 @@ import (
 	"net/http"
 
 	"github.com/docker/distribution/context"
+)
+
+const (
+	// UserKey is used to get the user object from
+	// a user context
+	UserKey = "auth.user"
+
+	// UserNameKey is used to get the user name from
+	// a user context
+	UserNameKey = "auth.user.name"
 )
 
 // UserInfo carries information about
@@ -100,9 +112,9 @@ type userInfoContext struct {
 
 func (uic userInfoContext) Value(key interface{}) interface{} {
 	switch key {
-	case "auth.user":
+	case UserKey:
 		return uic.user
-	case "auth.user.name":
+	case UserNameKey:
 		return uic.user.Name
 	}
 

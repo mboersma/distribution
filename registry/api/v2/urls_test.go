@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+
+	"github.com/docker/distribution/reference"
 )
 
 type urlBuilderTestCase struct {
@@ -13,6 +15,7 @@ type urlBuilderTestCase struct {
 }
 
 func makeURLBuilderTestCases(urlBuilder *URLBuilder) []urlBuilderTestCase {
+	fooBarRef, _ := reference.ParseNamed("foo/bar")
 	return []urlBuilderTestCase{
 		{
 			description:  "test base url",
@@ -23,37 +26,39 @@ func makeURLBuilderTestCases(urlBuilder *URLBuilder) []urlBuilderTestCase {
 			description:  "test tags url",
 			expectedPath: "/v2/foo/bar/tags/list",
 			build: func() (string, error) {
-				return urlBuilder.BuildTagsURL("foo/bar")
+				return urlBuilder.BuildTagsURL(fooBarRef)
 			},
 		},
 		{
 			description:  "test manifest url",
 			expectedPath: "/v2/foo/bar/manifests/tag",
 			build: func() (string, error) {
-				return urlBuilder.BuildManifestURL("foo/bar", "tag")
+				ref, _ := reference.WithTag(fooBarRef, "tag")
+				return urlBuilder.BuildManifestURL(ref)
 			},
 		},
 		{
 			description:  "build blob url",
-			expectedPath: "/v2/foo/bar/blobs/tarsum.v1+sha256:abcdef0123456789",
+			expectedPath: "/v2/foo/bar/blobs/sha256:3b3692957d439ac1928219a83fac91e7bf96c153725526874673ae1f2023f8d5",
 			build: func() (string, error) {
-				return urlBuilder.BuildBlobURL("foo/bar", "tarsum.v1+sha256:abcdef0123456789")
+				ref, _ := reference.WithDigest(fooBarRef, "sha256:3b3692957d439ac1928219a83fac91e7bf96c153725526874673ae1f2023f8d5")
+				return urlBuilder.BuildBlobURL(ref)
 			},
 		},
 		{
 			description:  "build blob upload url",
 			expectedPath: "/v2/foo/bar/blobs/uploads/",
 			build: func() (string, error) {
-				return urlBuilder.BuildBlobUploadURL("foo/bar")
+				return urlBuilder.BuildBlobUploadURL(fooBarRef)
 			},
 		},
 		{
 			description:  "build blob upload url with digest and size",
-			expectedPath: "/v2/foo/bar/blobs/uploads/?digest=tarsum.v1%2Bsha256%3Aabcdef0123456789&size=10000",
+			expectedPath: "/v2/foo/bar/blobs/uploads/?digest=sha256%3A3b3692957d439ac1928219a83fac91e7bf96c153725526874673ae1f2023f8d5&size=10000",
 			build: func() (string, error) {
-				return urlBuilder.BuildBlobUploadURL("foo/bar", url.Values{
+				return urlBuilder.BuildBlobUploadURL(fooBarRef, url.Values{
 					"size":   []string{"10000"},
-					"digest": []string{"tarsum.v1+sha256:abcdef0123456789"},
+					"digest": []string{"sha256:3b3692957d439ac1928219a83fac91e7bf96c153725526874673ae1f2023f8d5"},
 				})
 			},
 		},
@@ -61,16 +66,16 @@ func makeURLBuilderTestCases(urlBuilder *URLBuilder) []urlBuilderTestCase {
 			description:  "build blob upload chunk url",
 			expectedPath: "/v2/foo/bar/blobs/uploads/uuid-part",
 			build: func() (string, error) {
-				return urlBuilder.BuildBlobUploadChunkURL("foo/bar", "uuid-part")
+				return urlBuilder.BuildBlobUploadChunkURL(fooBarRef, "uuid-part")
 			},
 		},
 		{
 			description:  "build blob upload chunk url with digest and size",
-			expectedPath: "/v2/foo/bar/blobs/uploads/uuid-part?digest=tarsum.v1%2Bsha256%3Aabcdef0123456789&size=10000",
+			expectedPath: "/v2/foo/bar/blobs/uploads/uuid-part?digest=sha256%3A3b3692957d439ac1928219a83fac91e7bf96c153725526874673ae1f2023f8d5&size=10000",
 			build: func() (string, error) {
-				return urlBuilder.BuildBlobUploadChunkURL("foo/bar", "uuid-part", url.Values{
+				return urlBuilder.BuildBlobUploadChunkURL(fooBarRef, "uuid-part", url.Values{
 					"size":   []string{"10000"},
-					"digest": []string{"tarsum.v1+sha256:abcdef0123456789"},
+					"digest": []string{"sha256:3b3692957d439ac1928219a83fac91e7bf96c153725526874673ae1f2023f8d5"},
 				})
 			},
 		},
@@ -158,11 +163,17 @@ func TestBuilderFromRequest(t *testing.T) {
 	forwardedHostHeader2.Set("X-Forwarded-Host", "first.example.com, proxy1.example.com")
 
 	testRequests := []struct {
-		request *http.Request
-		base    string
+		request    *http.Request
+		base       string
+		configHost url.URL
 	}{
 		{
 			request: &http.Request{URL: u, Host: u.Host},
+			base:    "http://example.com",
+		},
+
+		{
+			request: &http.Request{URL: u, Host: u.Host, Header: forwardedProtoHeader},
 			base:    "http://example.com",
 		},
 		{
@@ -177,21 +188,45 @@ func TestBuilderFromRequest(t *testing.T) {
 			request: &http.Request{URL: u, Host: u.Host, Header: forwardedHostHeader2},
 			base:    "http://first.example.com",
 		},
+		{
+			request: &http.Request{URL: u, Host: u.Host, Header: forwardedHostHeader2},
+			base:    "https://third.example.com:5000",
+			configHost: url.URL{
+				Scheme: "https",
+				Host:   "third.example.com:5000",
+			},
+		},
 	}
 
 	for _, tr := range testRequests {
-		builder := NewURLBuilderFromRequest(tr.request)
+		var builder *URLBuilder
+		if tr.configHost.Scheme != "" && tr.configHost.Host != "" {
+			builder = NewURLBuilder(&tr.configHost)
+		} else {
+			builder = NewURLBuilderFromRequest(tr.request)
+		}
 
 		for _, testCase := range makeURLBuilderTestCases(builder) {
-			url, err := testCase.build()
+			buildURL, err := testCase.build()
 			if err != nil {
 				t.Fatalf("%s: error building url: %v", testCase.description, err)
 			}
 
-			expectedURL := tr.base + testCase.expectedPath
+			var expectedURL string
+			proto, ok := tr.request.Header["X-Forwarded-Proto"]
+			if !ok {
+				expectedURL = tr.base + testCase.expectedPath
+			} else {
+				urlBase, err := url.Parse(tr.base)
+				if err != nil {
+					t.Fatal(err)
+				}
+				urlBase.Scheme = proto[0]
+				expectedURL = urlBase.String() + testCase.expectedPath
+			}
 
-			if url != expectedURL {
-				t.Fatalf("%s: %q != %q", testCase.description, url, expectedURL)
+			if buildURL != expectedURL {
+				t.Fatalf("%s: %q != %q", testCase.description, buildURL, expectedURL)
 			}
 		}
 	}
@@ -207,32 +242,62 @@ func TestBuilderFromRequestWithPrefix(t *testing.T) {
 	forwardedProtoHeader.Set("X-Forwarded-Proto", "https")
 
 	testRequests := []struct {
-		request *http.Request
-		base    string
+		request    *http.Request
+		base       string
+		configHost url.URL
 	}{
 		{
 			request: &http.Request{URL: u, Host: u.Host},
+			base:    "http://example.com/prefix/",
+		},
+
+		{
+			request: &http.Request{URL: u, Host: u.Host, Header: forwardedProtoHeader},
 			base:    "http://example.com/prefix/",
 		},
 		{
 			request: &http.Request{URL: u, Host: u.Host, Header: forwardedProtoHeader},
 			base:    "https://example.com/prefix/",
 		},
+		{
+			request: &http.Request{URL: u, Host: u.Host, Header: forwardedProtoHeader},
+			base:    "https://subdomain.example.com/prefix/",
+			configHost: url.URL{
+				Scheme: "https",
+				Host:   "subdomain.example.com",
+				Path:   "/prefix/",
+			},
+		},
 	}
 
 	for _, tr := range testRequests {
-		builder := NewURLBuilderFromRequest(tr.request)
+		var builder *URLBuilder
+		if tr.configHost.Scheme != "" && tr.configHost.Host != "" {
+			builder = NewURLBuilder(&tr.configHost)
+		} else {
+			builder = NewURLBuilderFromRequest(tr.request)
+		}
 
 		for _, testCase := range makeURLBuilderTestCases(builder) {
-			url, err := testCase.build()
+			buildURL, err := testCase.build()
 			if err != nil {
 				t.Fatalf("%s: error building url: %v", testCase.description, err)
 			}
+			var expectedURL string
+			proto, ok := tr.request.Header["X-Forwarded-Proto"]
+			if !ok {
+				expectedURL = tr.base[0:len(tr.base)-1] + testCase.expectedPath
+			} else {
+				urlBase, err := url.Parse(tr.base)
+				if err != nil {
+					t.Fatal(err)
+				}
+				urlBase.Scheme = proto[0]
+				expectedURL = urlBase.String()[0:len(urlBase.String())-1] + testCase.expectedPath
+			}
 
-			expectedURL := tr.base[0:len(tr.base)-1] + testCase.expectedPath
-
-			if url != expectedURL {
-				t.Fatalf("%s: %q != %q", testCase.description, url, expectedURL)
+			if buildURL != expectedURL {
+				t.Fatalf("%s: %q != %q", testCase.description, buildURL, expectedURL)
 			}
 		}
 	}

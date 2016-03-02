@@ -11,11 +11,11 @@ ifeq (${DISABLE_OPTIMIZATION},true)
 	VERSION:="$(VERSION)-noopt"
 endif
 
-GO_LDFLAGS=-ldflags "-X `go list ./version`.Version $(VERSION)"
+GO_LDFLAGS=-ldflags "-X `go list ./version`.Version=$(VERSION)"
 
 .PHONY: clean all fmt vet lint build test binaries
-.DEFAULT: default
-all: AUTHORS clean fmt vet fmt lint build test binaries
+.DEFAULT: all
+all: fmt vet fmt lint build test binaries
 
 AUTHORS: .mailmap .git/HEAD
 	 git log --format='%aN <%aE>' | sort -fu > $@

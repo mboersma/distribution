@@ -48,7 +48,7 @@ const (
 // The storage backend layout is broken up into a content-addressable blob
 // store and repositories. The content-addressable blob store holds most data
 // throughout the backend, keyed by algorithm and digests of the underlying
-// content. Access to the blob store is controled through links from the
+// content. Access to the blob store is controlled through links from the
 // repository to blobstore.
 //
 // A repository is made up of layers, manifests and tags. The layers component
@@ -301,7 +301,7 @@ type manifestRevisionLinkPathSpec struct {
 
 func (manifestRevisionLinkPathSpec) pathSpec() {}
 
-// manifestSignaturesPathSpec decribes the path components for the directory
+// manifestSignaturesPathSpec describes the path components for the directory
 // containing all the signatures for the target blob. Entries are named with
 // the underlying key id.
 type manifestSignaturesPathSpec struct {
@@ -311,7 +311,7 @@ type manifestSignaturesPathSpec struct {
 
 func (manifestSignaturesPathSpec) pathSpec() {}
 
-// manifestSignatureLinkPathSpec decribes the path components used to look up
+// manifestSignatureLinkPathSpec describes the path components used to look up
 // a signature file by the hash of its blob.
 type manifestSignatureLinkPathSpec struct {
 	name      string
@@ -396,9 +396,8 @@ type layerLinkPathSpec struct {
 func (layerLinkPathSpec) pathSpec() {}
 
 // blobAlgorithmReplacer does some very simple path sanitization for user
-// input. Mostly, this is to provide some hierarchy for tarsum digests. Paths
-// should be "safe" before getting this far due to strict digest requirements
-// but we can add further path conversion here, if needed.
+// input. Paths should be "safe" before getting this far due to strict digest
+// requirements but we can add further path conversion here, if needed.
 var blobAlgorithmReplacer = strings.NewReplacer(
 	"+", "/",
 	".", "/",
@@ -468,10 +467,6 @@ func (repositoriesRootPathSpec) pathSpec() {}
 //
 // 	<algorithm>/<hex digest>
 //
-// Most importantly, for tarsum, the layout looks like this:
-//
-// 	tarsum/<version>/<digest algorithm>/<full digest>
-//
 // If multilevel is true, the first two bytes of the digest will separate
 // groups of digest folder. It will be as follows:
 //
@@ -493,20 +488,6 @@ func digestPathComponents(dgst digest.Digest, multilevel bool) ([]string, error)
 	}
 
 	suffix = append(suffix, hex)
-
-	if tsi, err := digest.ParseTarSum(dgst.String()); err == nil {
-		// We have a tarsum!
-		version := tsi.Version
-		if version == "" {
-			version = "v0"
-		}
-
-		prefix = []string{
-			"tarsum",
-			version,
-			tsi.Algorithm,
-		}
-	}
 
 	return append(prefix, suffix...), nil
 }

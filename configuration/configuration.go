@@ -64,6 +64,10 @@ type Configuration struct {
 		// Net specifies the net portion of the bind address. A default empty value means tcp.
 		Net string `yaml:"net,omitempty"`
 
+		// Host specifies an externally-reachable address for the registry, as a fully
+		// qualified URL.
+		Host string `yaml:"host,omitempty"`
+
 		Prefix string `yaml:"prefix,omitempty"`
 
 		// Secret specifies the secret key which HMAC tokens are created with.
@@ -141,6 +145,21 @@ type Configuration struct {
 	Health Health `yaml:"health,omitempty"`
 
 	Proxy Proxy `yaml:"proxy,omitempty"`
+
+	// Compatibility is used for configurations of working with older or deprecated features.
+	Compatibility struct {
+		// Schema1 configures how schema1 manifests will be handled
+		Schema1 struct {
+			// TrustKey is the signing key to use for adding the signature to
+			// schema1 manifests.
+			TrustKey string `yaml:"signingkeyfile,omitempty"`
+
+			// DisableSignatureStore will cause all signatures attached to schema1 manifests
+			// to be ignored. Signatures will be generated on all schema1 manifest requests
+			// rather than only requests which converted schema2 to schema1.
+			DisableSignatureStore bool `yaml:"disablesignaturestore,omitempty"`
+		} `yaml:"schema1,omitempty"`
+	} `yaml:"compatibility,omitempty"`
 }
 
 // LogHook is composed of hook Level and Type.

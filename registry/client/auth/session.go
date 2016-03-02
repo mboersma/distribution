@@ -10,9 +10,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Sirupsen/logrus"
 	"github.com/docker/distribution/registry/client"
 	"github.com/docker/distribution/registry/client/transport"
 )
+
+// ErrNoBasicAuthCredentials is returned if a request can't be authorized with
+// basic auth due to lack of credentials.
+var ErrNoBasicAuthCredentials = errors.New("no basic auth credentials")
 
 // AuthenticationHandler is an interface for authorizing a request from
 // params from a "WWW-Authenicate" header for a single scheme.
@@ -85,15 +90,30 @@ func (ea *endpointAuthorizer) ModifyRequest(req *http.Request) error {
 	return nil
 }
 
+// This is the minimum duration a token can last (in seconds).
+// A token must not live less than 60 seconds because older versions
+// of the Docker client didn't read their expiration from the token
+// response and assumed 60 seconds.  So to remain compatible with
+// those implementations, a token must live at least this long.
+const minimumTokenLifetimeSeconds = 60
+
+// Private interface for time used by this package to enable tests to provide their own implementation.
+type clock interface {
+	Now() time.Time
+}
+
 type tokenHandler struct {
 	header    http.Header
 	creds     CredentialStore
 	scope     tokenScope
 	transport http.RoundTripper
+	clock     clock
 
 	tokenLock       sync.Mutex
 	tokenCache      string
 	tokenExpiration time.Time
+
+	additionalScopes map[string]struct{}
 }
 
 // tokenScope represents the scope at which a token will be requested.
@@ -108,17 +128,30 @@ func (ts tokenScope) String() string {
 	return fmt.Sprintf("%s:%s:%s", ts.Resource, ts.Scope, strings.Join(ts.Actions, ","))
 }
 
+// An implementation of clock for providing real time data.
+type realClock struct{}
+
+// Now implements clock
+func (realClock) Now() time.Time { return time.Now() }
+
 // NewTokenHandler creates a new AuthenicationHandler which supports
 // fetching tokens from a remote token server.
 func NewTokenHandler(transport http.RoundTripper, creds CredentialStore, scope string, actions ...string) AuthenticationHandler {
+	return newTokenHandler(transport, creds, realClock{}, scope, actions...)
+}
+
+// newTokenHandler exposes the option to provide a clock to manipulate time in unit testing.
+func newTokenHandler(transport http.RoundTripper, creds CredentialStore, c clock, scope string, actions ...string) AuthenticationHandler {
 	return &tokenHandler{
 		transport: transport,
 		creds:     creds,
+		clock:     c,
 		scope: tokenScope{
 			Resource: "repository",
 			Scope:    scope,
 			Actions:  actions,
 		},
+		additionalScopes: map[string]struct{}{},
 	}
 }
 
@@ -134,7 +167,15 @@ func (th *tokenHandler) Scheme() string {
 }
 
 func (th *tokenHandler) AuthorizeRequest(req *http.Request, params map[string]string) error {
-	if err := th.refreshToken(params); err != nil {
+	var additionalScopes []string
+	if fromParam := req.URL.Query().Get("from"); fromParam != "" {
+		additionalScopes = append(additionalScopes, tokenScope{
+			Resource: "repository",
+			Scope:    fromParam,
+			Actions:  []string{"pull"},
+		}.String())
+	}
+	if err := th.refreshToken(params, additionalScopes...); err != nil {
 		return err
 	}
 
@@ -143,43 +184,52 @@ func (th *tokenHandler) AuthorizeRequest(req *http.Request, params map[string]st
 	return nil
 }
 
-func (th *tokenHandler) refreshToken(params map[string]string) error {
+func (th *tokenHandler) refreshToken(params map[string]string, additionalScopes ...string) error {
 	th.tokenLock.Lock()
 	defer th.tokenLock.Unlock()
-	now := time.Now()
-	if now.After(th.tokenExpiration) {
-		token, err := th.fetchToken(params)
+	var addedScopes bool
+	for _, scope := range additionalScopes {
+		if _, ok := th.additionalScopes[scope]; !ok {
+			th.additionalScopes[scope] = struct{}{}
+			addedScopes = true
+		}
+	}
+	now := th.clock.Now()
+	if now.After(th.tokenExpiration) || addedScopes {
+		tr, err := th.fetchToken(params)
 		if err != nil {
 			return err
 		}
-		th.tokenCache = token
-		th.tokenExpiration = now.Add(time.Minute)
+		th.tokenCache = tr.Token
+		th.tokenExpiration = tr.IssuedAt.Add(time.Duration(tr.ExpiresIn) * time.Second)
 	}
 
 	return nil
 }
 
 type tokenResponse struct {
-	Token string `json:"token"`
+	Token       string    `json:"token"`
+	AccessToken string    `json:"access_token"`
+	ExpiresIn   int       `json:"expires_in"`
+	IssuedAt    time.Time `json:"issued_at"`
 }
 
-func (th *tokenHandler) fetchToken(params map[string]string) (token string, err error) {
-	//log.Debugf("Getting bearer token with %s for %s", challenge.Parameters, ta.auth.Username)
+func (th *tokenHandler) fetchToken(params map[string]string) (token *tokenResponse, err error) {
 	realm, ok := params["realm"]
 	if !ok {
-		return "", errors.New("no realm specified for token auth challenge")
+		return nil, errors.New("no realm specified for token auth challenge")
 	}
 
 	// TODO(dmcgowan): Handle empty scheme
 
 	realmURL, err := url.Parse(realm)
 	if err != nil {
-		return "", fmt.Errorf("invalid token auth challenge realm: %s", err)
+		return nil, fmt.Errorf("invalid token auth challenge realm: %s", err)
 	}
 
 	req, err := http.NewRequest("GET", realmURL.String(), nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	reqParams := req.URL.Query()
@@ -194,6 +244,10 @@ func (th *tokenHandler) fetchToken(params map[string]string) (token string, err 
 		reqParams.Add("scope", scopeField)
 	}
 
+	for scope := range th.additionalScopes {
+		reqParams.Add("scope", scope)
+	}
+
 	if th.creds != nil {
 		username, password := th.creds.Basic(realmURL)
 		if username != "" && password != "" {
@@ -206,26 +260,45 @@ func (th *tokenHandler) fetchToken(params map[string]string) (token string, err 
 
 	resp, err := th.client().Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if !client.SuccessStatus(resp.StatusCode) {
-		return "", fmt.Errorf("token auth attempt for registry: %s request failed with status: %d %s", req.URL, resp.StatusCode, http.StatusText(resp.StatusCode))
+		err := client.HandleErrorResponse(resp)
+		return nil, err
 	}
 
 	decoder := json.NewDecoder(resp.Body)
 
 	tr := new(tokenResponse)
 	if err = decoder.Decode(tr); err != nil {
-		return "", fmt.Errorf("unable to decode token response: %s", err)
+		return nil, fmt.Errorf("unable to decode token response: %s", err)
+	}
+
+	// `access_token` is equivalent to `token` and if both are specified
+	// the choice is undefined.  Canonicalize `access_token` by sticking
+	// things in `token`.
+	if tr.AccessToken != "" {
+		tr.Token = tr.AccessToken
 	}
 
 	if tr.Token == "" {
-		return "", errors.New("authorization server did not include a token in the response")
+		return nil, errors.New("authorization server did not include a token in the response")
 	}
 
-	return tr.Token, nil
+	if tr.ExpiresIn < minimumTokenLifetimeSeconds {
+		// The default/minimum lifetime.
+		tr.ExpiresIn = minimumTokenLifetimeSeconds
+		logrus.Debugf("Increasing token expiration to: %d seconds", tr.ExpiresIn)
+	}
+
+	if tr.IssuedAt.IsZero() {
+		// issued_at is optional in the token response.
+		tr.IssuedAt = th.clock.Now()
+	}
+
+	return tr, nil
 }
 
 type basicHandler struct {
@@ -252,5 +325,5 @@ func (bh *basicHandler) AuthorizeRequest(req *http.Request, params map[string]st
 			return nil
 		}
 	}
-	return errors.New("no basic auth credentials")
+	return ErrNoBasicAuthCredentials
 }

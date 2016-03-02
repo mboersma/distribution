@@ -20,7 +20,7 @@ var (
 	ErrInvalidCredential = errors.New("invalid authorization credential")
 
 	// ErrAuthenticationFailure returned when authentication failure to be presented to agent.
-	ErrAuthenticationFailure = errors.New("authentication failured")
+	ErrAuthenticationFailure = errors.New("authentication failure")
 )
 
 type accessController struct {
@@ -94,7 +94,7 @@ func (ch challenge) SetHeaders(w http.ResponseWriter) {
 }
 
 func (ch challenge) Error() string {
-	return fmt.Sprintf("basic authentication challenge: %#v", ch)
+	return fmt.Sprintf("basic authentication challenge for realm %q: %s", ch.realm, ch.err)
 }
 
 func init() {
